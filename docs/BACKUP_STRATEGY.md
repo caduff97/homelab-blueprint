@@ -1,194 +1,146 @@
 # Backup Strategy
 
-How I handle backups for my homelab. The goal is protecting irreplaceable data (photos, documents) and making disaster recovery possible.
+How I handle backups for my homelab. The goal is protecting irreplaceable data (photos, databases) and making disaster recovery straightforward.
 
 ## Current State
 
-**Status**: Local backups operational, offsite in progress
+Migration to HP EliteDesk is complete. The backup strategy is partially active — ZFS snapshots are running, Restic is paused pending a new destination (PBS on black-hawk, which is being repurposed).
 
 | What | Status |
 |------|--------|
-| Database backups | Automated daily |
-| Nextcloud files | Automated daily |
-| Config files | Automated daily |
-| Photo library (360GB) | NOT backed up yet |
-| Offsite copy | Planned |
+| ZFS snapshots (tank pool) | ✅ Active — daily, 7-day retention |
+| Restic (databases, configs) | ⏸ Paused — needs new destination (PBS on black-hawk) |
+| PBS on black-hawk | 🔜 Planned — black-hawk being converted to Proxmox |
+| Offsite / external backup | 🔜 Planned — 1.8TB HDD on black-hawk |
 
 ## Storage Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           STORAGE LAYOUT                                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────────────┐     ┌──────────────────────┐                  │
-│  │   240GB SSD          │     │  120GB SSD           │                  │
-│  │   (System Drive)     │     │  /mnt/backup         │                  │
-│  ├──────────────────────┤     ├──────────────────────┤                  │
-│  │ /         ~80GB free │     │  Restic repository   │                  │
-│  │ /home     ~75GB free │────▶│  ~20GB used          │                  │
-│  │                      │     │  ~90GB free          │                  │
-│  │ Contains:            │     │                      │                  │
-│  │ - Docker containers  │     │  Daily backups       │                  │
-│  │ - Postgres DBs       │     │  Email alerts        │                  │
-│  │ - App configs        │     │  Auto-prune          │                  │
-│  └──────────────────────┘     └──────────────────────┘                  │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │              2TB External HDD (USB)                               │   │
-│  │              /mnt/data - ~700GB used                              │   │
-│  ├──────────────────────────────────────────────────────────────────┤   │
-│  │  /mnt/data/immich/     ~360GB  ← PHOTOS (NO BACKUP!)             │   │
-│  │    - 42,000+ photos                                               │   │
-│  │    - 7,000+ videos                                                │   │
-│  │  /mnt/data/nextcloud/  ~800MB  ← Files (BACKED UP)               │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+┌─────────────────────────────────────────────────────────────────────┐
+│               HP EliteDesk (Main Server — Proxmox)                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  500GB NVMe → Proxmox OS + LXC root disk (~92GB via LVM)            │
+│                                                                      │
+│  ZFS pool "tank" (2× 500GB HDD stripe, ~928GB usable)               │
+│  └── /tank/immich/uploads/   ~548GB  ← Immich photos (originals)    │
+│                                                                      │
+│  ZFS snapshots: daily, 7-day retention (local only)                 │
+│  125GB SSD → L2ARC read cache on tank pool                          │
+└─────────────────────────────────────────────────────────────────────┘
 
-The elephant in the room: my 360GB photo library has zero redundancy. If that external HDD fails, everything is gone. Solving this is my top priority.
+┌─────────────────────────────────────────────────────────────────────┐
+│               black-hawk (Dell — being repurposed)                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  240GB SSD → Proxmox OS + VM/LXC disks                              │
+│  500GB SSD → PBS datastore (secondary / VM storage)                 │
+│  1.8TB HDD → Primary PBS datastore (~1.2TB free after backups)      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## What's Being Backed Up
 
-| Path | Contents | Size |
-|------|----------|------|
-| `~/containers/` | All Postgres databases, app data | ~2GB |
-| `/mnt/data/nextcloud/` | Nextcloud user files | ~800MB |
-| `~/pihole/` | Pi-Hole configuration | ~50MB |
+### ZFS Snapshots (active)
 
-**Total backup size**: ~19GB (with Restic deduplication)
+Daily snapshots of the entire `tank` pool via cron on the Proxmox host. Protects against accidental deletion and provides point-in-time recovery for Immich photos.
 
-## Backup Schedule
+**Not a replacement for external backup** — snapshots live on the same disks as the data.
 
-| When | What | Notification |
-|------|------|--------------|
-| Daily 3:00 AM | Full incremental backup | Email on completion |
+```bash
+# /etc/cron.daily/zfs-snapshot
+zfs snapshot tank@$(date +%Y-%m-%d)
+zfs list -t snapshot -o name -s creation | grep "^tank@" | head -n -7 | xargs -r zfs destroy
+```
+
+### Restic — databases and configs (paused)
+
+Was backing up `~/containers/` (all Docker data, Postgres DBs) to a local SSD. That SSD has since been removed. Restic repo lives at `~/backup/restic` — intact but not being updated.
+
+**Needs**: PBS set up on black-hawk, then Restic destination updated to push there.
+
+### Planned: PBS on black-hawk
+
+Once black-hawk is running Proxmox + PBS:
+
+| What | Source | Destination | Method |
+|------|--------|-------------|--------|
+| LXC 100 full backup | HP EliteDesk | black-hawk PBS (1.8TB) | vzdump |
+| Immich photos | /tank/immich/uploads | black-hawk PBS (1.8TB) | rsync or PBS |
+| Databases/configs | ~/containers/ | black-hawk PBS (1.8TB) | Restic |
+
+## Schedule
+
+| Time | Job | Status |
+|------|-----|--------|
+| Daily (cron) | ZFS snapshot → tank pool | ✅ Active |
+| 3:00 AM | Restic → databases/configs | ⏸ Paused |
+| TBD | vzdump → PBS on black-hawk | 🔜 Planned |
+| TBD | rsync/PBS → photos to black-hawk | 🔜 Planned |
 
 ## Retention Policy
 
-Restic handles this automatically:
+| Snapshots | Count |
+|-----------|-------|
+| Daily | 7 |
+| Weekly | 4 |
+| Monthly | 3 |
 
-- **7 daily** snapshots
-- **4 weekly** snapshots
-- **3 monthly** snapshots
+~3 months of point-in-time recovery for database data.
 
-This gives me about 3 months of point-in-time recovery options.
+## Why Restic for databases, rsync for photos
 
-## Why Restic?
+| | Restic | rsync |
+|---|--------|-------|
+| Point-in-time recovery | Yes — go back weeks | No — last sync only |
+| Encryption at rest | Yes | No |
+| Speed on large data | Slow | Very fast |
+| Browse files without tools | No | Yes |
+| Catches silent DB corruption | Yes (old snapshots survive) | No |
 
-I chose Restic over alternatives because:
-
-1. **Deduplication** - Only stores changes, not full copies each time
-2. **Encryption** - Data encrypted at rest, safe for cloud storage later
-3. **Incremental** - Fast daily backups after initial seed
-4. **Simple restore** - Can restore entire snapshots or specific paths
-
-## Backup Script
-
-The backup runs via cron and sends email notifications:
-
-```bash
-#!/bin/bash
-# Simplified example - actual script has more logging
-
-export RESTIC_REPOSITORY="/mnt/backup/restic"
-export RESTIC_PASSWORD_FILE="/etc/restic-password"
-
-# Run backup
-restic backup \
-  ~/containers \
-  /mnt/data/nextcloud \
-  ~/pihole
-
-# Prune old snapshots
-restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
-
-# Send notification
-echo "Backup completed" | mail -s "Homelab Backup" my@email.com
-```
+Databases need Restic because corruption can go unnoticed for days — rsync would silently overwrite the last good backup before you notice. Photos don't have this problem.
 
 ## Recovery Procedures
 
-### Restore Entire Snapshot
+### Restore Immich database
 
 ```bash
-export RESTIC_REPOSITORY="/mnt/backup/restic"
-export RESTIC_PASSWORD_FILE="/etc/restic-password"
+# 1. Dump from running postgres (while healthy):
+docker exec -t immich_postgres pg_dumpall -c -U postgres > immich_dump.sql
 
+# 2. Stop Immich, restore:
+cd ~/containers/immich
+docker compose stop immich-server immich-machine-learning
+docker compose up -d database
+# wait for healthy...
+docker exec -i immich_postgres psql -U postgres -d postgres < immich_dump.sql
+docker compose up -d
+```
+
+### Restore from ZFS snapshot
+
+```bash
 # List available snapshots
-sudo -E restic snapshots
+zfs list -t snapshot
 
-# Restore specific snapshot
-sudo -E restic restore abc123 --target /path/to/restore
+# Roll back pool to a snapshot (DESTRUCTIVE — loses changes after snapshot)
+zfs rollback tank@2026-05-26
+
+# Restore a single file/folder non-destructively
+cp /tank/.zfs/snapshot/2026-05-26/immich/uploads/path/to/file /tank/immich/uploads/
 ```
 
-### Restore Specific Path
+### Verify ZFS health
 
 ```bash
-# Restore just Pi-Hole config from latest backup
-sudo -E restic restore latest --target /tmp/restore --include "pihole"
+zpool status tank
+zpool scrub tank   # triggers integrity check — run monthly
 ```
 
-### Verify Backup Integrity
+## 3-2-1 Rule Status
 
-```bash
-sudo -E restic check
-```
+| Rule | Status |
+|------|--------|
+| **3** copies of data | ⏸ 1 live (ZFS) + local snapshots only — external pending |
+| **2** different media | 🔜 Pending PBS setup on black-hawk |
+| **1** offsite copy | ❌ Not yet — all storage on-site |
 
-## Risk Assessment
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| External HDD failure | **CATASTROPHIC** - Lose 42K photos | None yet |
-| Database corruption | High - Lose app data | Daily Restic backups |
-| Accidental deletion | High - Lose files | 3 months of snapshots |
-| Ransomware | Catastrophic | Partial (local only, no offsite) |
-| Server total loss | High | Can restore from backup SSD |
-
-## What's NOT Backed Up (Yet)
-
-| Data | Size | Priority | Notes |
-|------|------|----------|-------|
-| Immich photos | ~360GB | **CRITICAL** | Too large for backup SSD |
-| Uptime Kuma | ~8MB | Low | Can recreate monitoring config |
-| Portainer | ~10MB | Low | Stack configs in git anyway |
-| System configs | <1MB | Medium | `/etc/fstab`, crontabs, etc. |
-
-## The 3-2-1 Goal
-
-I'm working toward the 3-2-1 backup rule:
-
-| Rule | Current | Target |
-|------|---------|--------|
-| **3** copies of data | 2 (production + local SSD) | 3 |
-| **2** different media | 2 (SSD + HDD) | 2 |
-| **1** offsite | 0 | 1 |
-
-### Offsite Options I'm Considering
-
-**Option A: Backblaze B2 (free tier)**
-- Pros: 10GB free, automatic offsite, easy Restic integration
-- Cons: Only fits databases, not photos
-- Best for: Critical database backups
-
-**Option B: Second 2TB HDD (~$70)**
-- Pros: Fits entire photo library, one-time cost
-- Cons: Manual rotation, need offsite storage location
-- Best for: Full Immich backup with offsite rotation
-
-**Option C: Hybrid (likely winner)**
-- Backblaze B2 for databases (free tier)
-- Second HDD for photos, rotated offsite monthly
-
-## Lessons Learned
-
-1. **Start with databases** - They're small and critical. Don't wait for the "perfect" solution.
-
-2. **Test restores** - A backup that can't be restored isn't a backup. I test mine quarterly.
-
-3. **Automate everything** - Manual backups don't happen. Cron + email notifications = peace of mind.
-
-4. **Separate backup drive** - Keeping backups on the same drive as production is asking for trouble.
-
-5. **Encryption from day one** - Using Restic's encryption means I can safely move backups to cloud storage later.
+**Next milestone**: PBS on black-hawk → achieve 2-copy minimum and re-enable Restic.

@@ -32,8 +32,8 @@ My solution splits traffic into two paths: **public** (through Cloudflare Tunnel
               │                                     │
               ▼                                     ▼
    ┌─────────────────────┐               ┌─────────────────────┐
-   │    cloudflared      │               │   Tailscale Serve   │
-   │    (Docker)         │               │   (built-in proxy)  │
+   │    cloudflared      │               │   Caddy Proxy       │
+   │    (Docker)         │               │   (*.internal)      │
    └──────────┬──────────┘               └──────────┬──────────┘
               │                                     │
         ┌─────┴─────┐                         ┌─────┴─────┐
@@ -52,27 +52,38 @@ My solution splits traffic into two paths: **public** (through Cloudflare Tunnel
 Web applications accessible to anyone - client projects, side projects, whatever needs to be on the internet. Cloudflare handles SSL and hides my home IP completely.
 
 ### Private Services
-- **Immich** - Self-hosted Google Photos replacement (42K+ photos backed up)
+- **Immich** - Self-hosted Google Photos replacement
 - **Nextcloud** - File sync across all my devices
-- **Pi-Hole** - Network-wide ad blocking that follows me everywhere via Tailscale DNS
-- **Portainer** - Web UI for managing Docker containers
-- **Uptime Kuma** - Monitoring dashboard with email alerts
+- **CapitalLog** - Personal investments manager (own project)
+- **Uptime Kuma** - Monitoring dashboard with alerts
+- **DailyTxt** - Private daily journal
+- **Dockge** - Stack management UI
 
 ## The Hardware
 
-Nothing fancy - just an old desktop I had lying around:
+Repurposed hardware — the main server is an HP EliteDesk mini PC running Proxmox:
 
-| Component | Spec |
-|-----------|------|
-| CPU | Intel Core i5 (4 cores) |
-| RAM | 32GB DDR3 |
-| System | 240GB SSD |
-| Backup | 120GB SSD |
-| Data | 2TB external HDD |
+| Component | Spec | Purpose |
+|-----------|------|---------|
+| CPU | Intel Core i5-6500 (4 cores) | |
+| RAM | 16GB DDR4 | |
+| System | 500GB NVMe | Proxmox OS + LXC root disk |
+| Data | 2× 500GB HDD | ZFS stripe pool "tank" (~928GB usable) |
+| Cache | 125GB SSD | ZFS L2ARC on tank pool |
 
-Total cost: **$0** (used what I had)
+Total cost: **~$53** ($25 motherboard, $10 SSD, $6 HDDs, $12 cables + thermal paste)
 
-The 2TB drive holds all my photos and Nextcloud files. The 120GB SSD runs automated encrypted backups of everything except photos (those are too big - solving that next).
+All service data lives on the ZFS pool. ZFS handles daily snapshots (7-day retention) for local point-in-time recovery.
+
+### Migration Status
+
+Full infrastructure migration from old Dell desktop to HP EliteDesk:
+
+| Machine | Role | Status |
+|---------|------|--------|
+| HP EliteDesk | Main server — Proxmox host | **Active** |
+| Dell desktop | Pending retirement → future Proxmox Backup Server | In transition |
+| Netgear ReadyNAS Duo V2 | Retired — drives repurposed into ZFS pool on HP EliteDesk | Done |
 
 ## Why This Setup?
 
@@ -97,6 +108,7 @@ I've documented everything so I can recreate this setup if needed (and maybe it 
 - **[Architecture Guide](docs/ARCHITECTURE.md)** - Technical details and how to add new services
 - **[Backup Strategy](docs/BACKUP_STRATEGY.md)** - How backups work, what's covered, what's not
 - **[Lessons Learned](docs/LESSONS_LEARNED.md)** - Mistakes I made so you don't have to
+- **[black-hawk Setup](docs/BLACK_HAWK_SETUP.md)** - Plan for repurposing old Dell as dev machine + backup server
 
 ## Quick Commands
 
@@ -104,11 +116,11 @@ I've documented everything so I can recreate this setup if needed (and maybe it 
 # Check if tunnel is healthy
 docker logs cloudflared --tail 20
 
-# See what Tailscale is serving
-tailscale serve status
-
 # Container status
 docker ps --format "table {{.Names}}\t{{.Status}}"
+
+# Reload Caddy after Caddyfile changes
+cd ~/containers/caddy && docker compose up -d --force-recreate
 
 # Run a backup manually
 sudo /path/to/backup.sh
@@ -127,10 +139,16 @@ sudo -E restic snapshots
 
 **Want something private?**
 1. Deploy container bound to `127.0.0.1:PORT`
-2. Run `tailscale serve --bg --https=PORT http://127.0.0.1:PORT`
-3. Access at `https://your-machine.tailnet.ts.net:PORT`
+2. Add to `~/containers/caddy/Caddyfile`:
+   ```
+   myservice.internal {
+     reverse_proxy 127.0.0.1:PORT
+   }
+   ```
+3. Reload Caddy: `cd ~/containers/caddy && docker compose up -d --force-recreate`
+4. Access at `https://myservice.internal`
 
-That's it. No nginx configs, no cert renewals, no firewall rules.
+That's it. Clean URL, valid cert, no port numbers.
 
 ---
 
