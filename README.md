@@ -1,8 +1,8 @@
 # Homelab Infrastructure
 
-This is my homelab setup - a single server running multiple services for personal use and hosting web applications. I built it with one goal: **keep things secure without making my life complicated**.
+This is my homelab setup — a two-node Proxmox cluster running multiple services for personal use and hosting web applications. I built it with one goal: **keep things secure without making my life complicated**.
 
-The result? Zero port forwarding on my router, my home IP completely hidden from the internet, and I can access my personal services from anywhere through a zero-trust VPN. All of this runs on repurposed hardware that cost me nothing.
+The result? Zero port forwarding on my router, my home IP completely hidden from the internet, and I can access my personal services from anywhere through a zero-trust VPN. All of this runs on repurposed hardware.
 
 ## The Problem I Solved
 
@@ -59,10 +59,14 @@ Web applications accessible to anyone - client projects, side projects, whatever
 - **DailyTxt** - Private daily journal
 - **Dockge** - Stack management UI
 
+### AI & Automation
+- **Hermes Agent** - AI agent accessible via Telegram — remote homelab control and task automation
+
 ## The Hardware
 
-Repurposed hardware — the main server is an HP EliteDesk mini PC running Proxmox:
+Two-node Proxmox cluster on repurposed hardware:
 
+### Node 1 — proxmox (HP EliteDesk mini PC)
 | Component | Spec | Purpose |
 |-----------|------|---------|
 | CPU | Intel Core i5-6500 (4 cores) | |
@@ -71,44 +75,36 @@ Repurposed hardware — the main server is an HP EliteDesk mini PC running Proxm
 | Data | 2× 500GB HDD | ZFS stripe pool "tank" (~928GB usable) |
 | Cache | 125GB SSD | ZFS L2ARC on tank pool |
 
-Total cost: **~$53** ($25 motherboard, $10 SSD, $6 HDDs, $12 cables + thermal paste)
+### Node 2 — wardstone (Dell desktop)
+| Component | Spec | Purpose |
+|-----------|------|---------|
+| CPU | Intel Core i5-4500 (4 cores) | |
+| RAM | 32GB DDR4 | |
+| System | 240GB SSD | Proxmox OS + VM/LXC local disks (local-lvm) |
+| Storage | 500GB SSD | Additional VM/LXC storage (/mnt/storage) |
+| Backup | 1.8TB USB HDD | PBS primary datastore (/mnt/pbs) |
 
-All service data lives on the ZFS pool. ZFS handles daily snapshots (7-day retention) for local point-in-time recovery.
+Total cost: **~$53** for the HP EliteDesk ($25 motherboard, $10 SSD, $6 HDDs, $12 cables + thermal paste). Wardstone was a repurposed machine already on hand.
 
-### Migration Status
-
-Full infrastructure migration from old Dell desktop to HP EliteDesk:
+### Cluster Overview
 
 | Machine | Role | Status |
 |---------|------|--------|
-| HP EliteDesk | Main server — Proxmox host | **Active** |
-| Dell desktop | Pending retirement → future Proxmox Backup Server | In transition |
-| Netgear ReadyNAS Duo V2 | Retired — drives repurposed into ZFS pool on HP EliteDesk | Done |
+| proxmox (HP EliteDesk) | Main server — all Docker services | **Active** |
+| wardstone (Dell desktop) | Backup server + daily workstation | **Active** |
 
-## Why This Setup?
+## Security Model
 
-| Old Way | My Way |
-|---------|--------|
-| Port forward 80/443 | Cloudflare Tunnel (outbound only) |
-| Expose home IP | IP completely hidden |
-| DDNS for dynamic IP | Cloudflare handles DNS |
-| Manual SSL certs | Automatic from both providers |
-| OpenVPN server | Tailscale (zero config) |
-| VPN for everything | Only private stuff needs VPN |
-
-The security model is simple:
+The approach is simple:
 1. **Router has zero open ports** - All tunnel connections go outbound
 2. **Private services bind to localhost** - Can't reach them even on LAN
 3. **Tailscale authenticates devices** - Not just network access, device identity
 
 ## Documentation
 
-I've documented everything so I can recreate this setup if needed (and maybe it helps someone else):
-
-- **[Architecture Guide](docs/ARCHITECTURE.md)** - Technical details and how to add new services
-- **[Backup Strategy](docs/BACKUP_STRATEGY.md)** - How backups work, what's covered, what's not
+- **[Architecture Guide](docs/ARCHITECTURE.md)** - Technical details, cluster setup, and how to add new services
+- **[Backup Strategy](docs/BACKUP_STRATEGY.md)** - How backups work, what's covered, retention policies
 - **[Lessons Learned](docs/LESSONS_LEARNED.md)** - Mistakes I made so you don't have to
-- **[black-hawk Setup](docs/BLACK_HAWK_SETUP.md)** - Plan for repurposing old Dell as dev machine + backup server
 
 ## Quick Commands
 
@@ -122,11 +118,11 @@ docker ps --format "table {{.Names}}\t{{.Status}}"
 # Reload Caddy after Caddyfile changes
 cd ~/containers/caddy && docker compose up -d --force-recreate
 
-# Run a backup manually
-sudo /path/to/backup.sh
+# Check backup status (run on proxmox host)
+tail -20 /var/log/immich-backup.log
 
-# Check backup history
-sudo -E restic snapshots
+# PBS backup status
+# Open https://wardstone-ip:8007 → Datastore → main → Content
 ```
 
 ## Adding New Services

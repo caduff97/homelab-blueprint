@@ -546,6 +546,56 @@ services:
 
 Access at `https://uptime.internal`
 
+## Wardstone — Second Node
+
+### Overview
+
+wardstone is the second Proxmox node in the `homelab` cluster. It runs on Wi-Fi with a NAT bridge for VMs/LXCs, hosts PBS for backups, and runs the daily workstation VM with iGPU passthrough.
+
+### Network
+
+```
+Wi-Fi router
+     │
+  wlp2s0 (host — static LAN IP, managed via web UI)
+     │
+  vmbr0 (NAT bridge — 10.10.10.1/24)
+     │
+  LXCs / VMs (10.10.10.x)
+```
+
+No DHCP on vmbr0 — all LXC/VM IPs are static. DNS must be set explicitly via **Proxmox UI → LXC → Options → DNS**.
+
+### Storage
+
+| Mount | Drive | Purpose |
+|-------|-------|---------|
+| local-lvm | 240GB SSD | VM/LXC disks |
+| /mnt/storage | 500GB SSD | Additional storage |
+| /mnt/pbs | 1.8TB USB HDD | PBS datastore `main` |
+
+### iGPU Passthrough (spellcaster VM)
+
+Intel HD Graphics 4600 (i5-4500, Haswell — no GVT-g) is fully passed through to the Ubuntu VM. Host runs headlessly after boot.
+
+Key files:
+- `/etc/default/grub` — `intel_iommu=on iommu=pt`
+- `/etc/modprobe.d/blacklist.conf` — blacklists `i915` and `snd_hda_intel`
+- `/etc/modprobe.d/vfio.conf` — `options vfio-pci ids=8086:0412`
+
+### PBS
+
+Proxmox Backup Server runs natively on the wardstone host (port 8007). Datastore `main` at `/mnt/pbs`. Connected to the proxmox node via **Datacenter → Storage → Proxmox Backup Server**.
+
+### Hermes Agent (CT 200)
+
+Hermes AI agent running in a Debian 13 LXC. Accessible via Telegram. Managed as a systemd service (`hermes-gateway`).
+
+```bash
+systemctl status hermes-gateway
+journalctl -u hermes-gateway -f
+```
+
 ## Common Operations
 
 ### Restarting the Tunnel

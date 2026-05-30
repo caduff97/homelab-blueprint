@@ -4,20 +4,22 @@ How I handle backups for my homelab. The goal is protecting irreplaceable data (
 
 ## Current State
 
-Migration to HP EliteDesk is complete. The backup strategy is partially active — ZFS snapshots are running, Restic is paused pending a new destination (PBS on black-hawk, which is being repurposed).
+Backup strategy is fully active across two nodes.
 
 | What | Status |
 |------|--------|
 | ZFS snapshots (tank pool) | ✅ Active — daily, 7-day retention |
-| Restic (databases, configs) | ⏸ Paused — needs new destination (PBS on black-hawk) |
-| PBS on black-hawk | 🔜 Planned — black-hawk being converted to Proxmox |
-| Offsite / external backup | 🔜 Planned — 1.8TB HDD on black-hawk |
+| CT 100 vzdump → PBS | ✅ Active — daily midnight, wardstone PBS |
+| Immich photos → PBS | ✅ Active — nightly 2AM, proxmox-backup-client |
+| CT 200 (hermes) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
+| VM 201 (spellcaster) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
+| Offsite / external backup | ❌ Not yet — all storage on-site |
 
 ## Storage Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│               HP EliteDesk (Main Server — Proxmox)                   │
+│               proxmox (HP EliteDesk — Main Server)                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  500GB NVMe → Proxmox OS + LXC root disk (~92GB via LVM)            │
 │                                                                      │
@@ -29,11 +31,11 @@ Migration to HP EliteDesk is complete. The backup strategy is partially active �
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│               black-hawk (Dell — being repurposed)                   │
+│               wardstone (Dell desktop — Backup Node)                 │
 ├─────────────────────────────────────────────────────────────────────┤
-│  240GB SSD → Proxmox OS + VM/LXC disks                              │
-│  500GB SSD → PBS datastore (secondary / VM storage)                 │
-│  1.8TB HDD → Primary PBS datastore (~1.2TB free after backups)      │
+│  240GB SSD → Proxmox OS + VM/LXC disks (local-lvm)                 │
+│  500GB SSD → Additional VM/LXC storage (/mnt/storage)              │
+│  1.8TB USB HDD → Primary PBS datastore (/mnt/pbs)                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,30 +53,39 @@ zfs snapshot tank@$(date +%Y-%m-%d)
 zfs list -t snapshot -o name -s creation | grep "^tank@" | head -n -7 | xargs -r zfs destroy
 ```
 
-### Restic — databases and configs (paused)
+### CT 100 vzdump → PBS (active)
 
-Was backing up `~/containers/` (all Docker data, Postgres DBs) to a local SSD. That SSD has since been removed. Restic repo lives at `~/backup/restic` — intact but not being updated.
+Full LXC snapshot backup of the main Ubuntu container (all Docker services, configs). Runs nightly at midnight via Proxmox backup scheduler.
 
-**Needs**: PBS set up on black-hawk, then Restic destination updated to push there.
+- **Storage:** wardstone PBS datastore `main`
+- **Mode:** Snapshot (container frozen briefly, then backed up live)
+- **Note:** Bind-mounted paths (`/tank/immich`) are excluded — covered separately below
 
-### Planned: PBS on black-hawk
+### Immich Photos → PBS (active)
 
-Once black-hawk is running Proxmox + PBS:
+`proxmox-backup-client` backs up `/tank/immich/uploads` directly to wardstone PBS. After the first full backup (~510GB), subsequent runs only upload changed chunks — typically fast.
 
-| What | Source | Destination | Method |
-|------|--------|-------------|--------|
-| LXC 100 full backup | HP EliteDesk | black-hawk PBS (1.8TB) | vzdump |
-| Immich photos | /tank/immich/uploads | black-hawk PBS (1.8TB) | rsync or PBS |
-| Databases/configs | ~/containers/ | black-hawk PBS (1.8TB) | Restic |
+```bash
+# /usr/local/bin/immich-backup.sh (runs via /etc/cron.d/pbs-immich at 2AM)
+PBS_FINGERPRINT="..." PBS_PASSWORD="..." \
+proxmox-backup-client backup immich-photos.pxar:/tank/immich/uploads \
+  --repository "root@pam@wardstone-ip:main" \
+  --backup-type host \
+  --backup-id immich-photos
+```
+
+### CT 200 + VM 201 → PBS (active)
+
+Hermes LXC and spellcaster Ubuntu VM backed up nightly at 1AM via Proxmox backup scheduler to wardstone PBS.
 
 ## Schedule
 
-| Time | Job | Status |
-|------|-----|--------|
-| Daily (cron) | ZFS snapshot → tank pool | ✅ Active |
-| 3:00 AM | Restic → databases/configs | ⏸ Paused |
-| TBD | vzdump → PBS on black-hawk | 🔜 Planned |
-| TBD | rsync/PBS → photos to black-hawk | 🔜 Planned |
+| Time | Job | Node | Status |
+|------|-----|------|--------|
+| Daily (cron) | ZFS snapshot → tank pool | proxmox | ✅ Active |
+| 12:00 AM | CT 100 vzdump → wardstone PBS | proxmox | ✅ Active |
+| 12:00 AM | CT 200 + VM 201 vzdump → PBS | wardstone | ✅ Active |
+| 2:00 AM | Immich photos → wardstone PBS | proxmox | ✅ Active |
 
 ## Retention Policy
 
@@ -84,21 +95,32 @@ Once black-hawk is running Proxmox + PBS:
 | Weekly | 4 |
 | Monthly | 3 |
 
-~3 months of point-in-time recovery for database data.
+~3 months of point-in-time recovery.
 
-## Why Restic for databases, rsync for photos
+## Why proxmox-backup-client for photos
 
-| | Restic | rsync |
-|---|--------|-------|
-| Point-in-time recovery | Yes — go back weeks | No — last sync only |
-| Encryption at rest | Yes | No |
-| Speed on large data | Slow | Very fast |
-| Browse files without tools | No | Yes |
-| Catches silent DB corruption | Yes (old snapshots survive) | No |
-
-Databases need Restic because corruption can go unnoticed for days — rsync would silently overwrite the last good backup before you notice. Photos don't have this problem.
+vzdump excludes bind-mounted paths like `/tank/immich` — Proxmox explicitly warns about this during backup. `proxmox-backup-client` backs up arbitrary directories directly to PBS with full deduplication, so only changed chunks upload after the first run.
 
 ## Recovery Procedures
+
+### Restore LXC or VM from PBS
+
+In Proxmox web UI: **wardstone → PBS storage → select snapshot → Restore**
+
+Or via CLI on the target node:
+```bash
+qmrestore /path/to/backup.vma <vmid>   # VM
+pct restore <ctid> /path/to/backup.tar # LXC
+```
+
+### Restore Immich photos from PBS
+
+```bash
+proxmox-backup-client restore immich-photos.pxar:/restore-path \
+  --repository "root@pam@wardstone-ip:main" \
+  --backup-type host \
+  --backup-id immich-photos
+```
 
 ### Restore Immich database
 
@@ -139,8 +161,8 @@ zpool scrub tank   # triggers integrity check — run monthly
 
 | Rule | Status |
 |------|--------|
-| **3** copies of data | ⏸ 1 live (ZFS) + local snapshots only — external pending |
-| **2** different media | 🔜 Pending PBS setup on black-hawk |
+| **3** copies of data | ✅ Live (ZFS) + PBS on wardstone + ZFS snapshots |
+| **2** different media | ✅ NVMe/HDD on proxmox + USB HDD on wardstone |
 | **1** offsite copy | ❌ Not yet — all storage on-site |
 
-**Next milestone**: PBS on black-hawk → achieve 2-copy minimum and re-enable Restic.
+**Next milestone**: offsite backup — cloud storage (Backblaze B2 via Restic) or a physically separate location.
