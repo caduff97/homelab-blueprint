@@ -55,6 +55,7 @@ Web applications accessible to anyone - client projects, side projects, whatever
 - **Immich** - Self-hosted Google Photos replacement
 - **Nextcloud** - File sync across all my devices
 - **CapitalLog** - Personal investments manager (own project)
+- **LubeLogger** - Vehicle maintenance and fuel/service tracking
 - **Uptime Kuma** - Monitoring dashboard with alerts
 - **DailyTxt** - Private daily journal
 - **Dockge** - Stack management UI

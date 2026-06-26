@@ -10,7 +10,8 @@ Backup strategy is fully active across two nodes.
 |------|--------|
 | ZFS snapshots (tank pool) | ✅ Active — daily, 7-day retention |
 | CT 100 vzdump → PBS | ✅ Active — daily midnight, wardstone PBS |
-| Immich photos → PBS | ✅ Active — nightly 2AM, proxmox-backup-client |
+| Immich media backup | ✅ Active — nightly PBS backup with lean scope |
+| Immich DB dump staging | ✅ Active — app-generated dump prepared before backup |
 | CT 200 (hermes) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
 | VM 201 (spellcaster) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
 | Offsite / external backup | ❌ Not yet — all storage on-site |
@@ -24,7 +25,7 @@ Backup strategy is fully active across two nodes.
 │  500GB NVMe → Proxmox OS + LXC root disk (~92GB via LVM)            │
 │                                                                      │
 │  ZFS pool "tank" (2× 500GB HDD stripe, ~928GB usable)               │
-│  └── /tank/immich/uploads/   ~548GB  ← Immich photos (originals)    │
+│  └── Immich library data (originals + backup staging)                │
 │                                                                      │
 │  ZFS snapshots: daily, 7-day retention (local only)                 │
 │  125GB SSD → L2ARC read cache on tank pool                          │
@@ -59,20 +60,31 @@ Full LXC snapshot backup of the main Ubuntu container (all Docker services, conf
 
 - **Storage:** wardstone PBS datastore `main`
 - **Mode:** Snapshot (container frozen briefly, then backed up live)
+- **Covers:** service folders under `/root/containers`
 - **Note:** Bind-mounted paths (`/tank/immich`) are excluded — covered separately below
 
-### Immich Photos → PBS (active)
+### Immich Media Backup (active)
 
-`proxmox-backup-client` backs up `/tank/immich/uploads` directly to wardstone PBS. After the first full backup (~510GB), subsequent runs only upload changed chunks — typically fast.
+The nightly Immich backup is intentionally lean: it focuses on the data that matters for recovery while avoiding bulky rebuildable artifacts that would just waste backup time and storage.
 
-```bash
-# /usr/local/bin/immich-backup.sh (runs via /etc/cron.d/pbs-immich at 2AM)
-PBS_FINGERPRINT="..." PBS_PASSWORD="..." \
-proxmox-backup-client backup immich-photos.pxar:/tank/immich/uploads \
-  --repository "root@pam@wardstone-ip:main" \
-  --backup-type host \
-  --backup-id immich-photos
-```
+- **Included:** original media plus the app-generated backup folder prepared before the backup run
+- **Excluded:** rebuildable derivatives such as thumbnails, transcoded video, and similar caches
+- **Why this scope:** faster incrementals, less storage waste, and cleaner disaster recovery
+
+This gives me the important user data and the database-dump artifacts together, without forcing the backup system to churn through everything Immich can regenerate on its own.
+
+### Immich DB Dump Staging (active)
+
+Before the nightly media backup, Immich creates its database dump so the backup window captures fresh DB state along with the rest of the important library data.
+
+- **DB dump timing:** 12:00 AM
+- **Backup timing:** 12:10 AM
+- **Design goal:** let the dump finish first, then include that backup folder in the nightly run
+
+Why this split:
+- the DB snapshot is always created before the file backup starts
+- the nightly backup captures media and DB-recovery artifacts together
+- rebuildable data stays out of scope, keeping incrementals efficient
 
 ### CT 200 + VM 201 → PBS (active)
 
@@ -85,7 +97,8 @@ Hermes LXC and spellcaster Ubuntu VM backed up nightly at 1AM via Proxmox backup
 | Daily (cron) | ZFS snapshot → tank pool | proxmox | ✅ Active |
 | 12:00 AM | CT 100 vzdump → wardstone PBS | proxmox | ✅ Active |
 | 12:00 AM | CT 200 + VM 201 vzdump → PBS | wardstone | ✅ Active |
-| 2:00 AM | Immich photos → wardstone PBS | proxmox | ✅ Active |
+| 12:00 AM | Immich DB dump staging | main app host | ✅ Active |
+| 12:10 AM | Immich media backup | main app host / PBS flow | ✅ Active |
 
 ## Retention Policy
 
@@ -97,9 +110,16 @@ Hermes LXC and spellcaster Ubuntu VM backed up nightly at 1AM via Proxmox backup
 
 ~3 months of point-in-time recovery.
 
-## Why proxmox-backup-client for photos
+## Why the Immich backup scope is selective
 
-vzdump excludes bind-mounted paths like `/tank/immich` — Proxmox explicitly warns about this during backup. `proxmox-backup-client` backs up arbitrary directories directly to PBS with full deduplication, so only changed chunks upload after the first run.
+The goal is not to back up every byte Immich touches. The goal is to protect what would actually hurt to lose.
+
+That means:
+- keep originals
+- keep the backup folder that contains the fresh DB dump
+- skip generated derivatives Immich can rebuild
+
+This keeps the nightly job practical and avoids wasteful rescans when only a small amount of meaningful data changed.
 
 ## Recovery Procedures
 
@@ -113,7 +133,7 @@ qmrestore /path/to/backup.vma <vmid>   # VM
 pct restore <ctid> /path/to/backup.tar # LXC
 ```
 
-### Restore Immich photos from PBS
+### Restore Immich media from PBS
 
 ```bash
 proxmox-backup-client restore immich-photos.pxar:/restore-path \
@@ -122,19 +142,13 @@ proxmox-backup-client restore immich-photos.pxar:/restore-path \
   --backup-id immich-photos
 ```
 
+Restore the important library data first, including the backup artifacts created before the nightly run.
+
 ### Restore Immich database
 
 ```bash
-# 1. Dump from running postgres (while healthy):
-docker exec -t immich_postgres pg_dumpall -c -U postgres > immich_dump.sql
-
-# 2. Stop Immich, restore:
-cd ~/containers/immich
-docker compose stop immich-server immich-machine-learning
-docker compose up -d database
-# wait for healthy...
-docker exec -i immich_postgres psql -U postgres -d postgres < immich_dump.sql
-docker compose up -d
+# Use the database dump captured in the backup folder from the same nightly backup set.
+# Restore DB first, then bring the full Immich stack back.
 ```
 
 ### Restore from ZFS snapshot

@@ -473,6 +473,7 @@ Each service lives in its own folder under `~/containers/`:
 ├── cloudflared/    ← Cloudflare Tunnel
 ├── dnsmasq/        ← *.internal DNS resolution
 ├── dockge/         ← stack management UI
+├── lubelogger/     ← vehicle maintenance tracker
 ├── uptime-kuma/    ← monitoring
 ├── dailytxt/       ← journal app
 ├── capitallog/     ← investments manager
@@ -485,6 +486,39 @@ Each service lives in its own folder under `~/containers/`:
 ```
 
 Each folder contains a `docker-compose.yml`, optional `.env`, and a `data/` directory for persistent volumes. Large-data services (Nextcloud, Immich) reference `/mnt/data/<service>` via `.env` instead of `./data/`.
+
+### LubeLogger
+
+Private service for vehicle maintenance, fuel logs, and service history.
+
+- Stack path: `/root/containers/lubelogger`
+- Container name: `lubelogger`
+- Image: `ghcr.io/hargata/lubelogger:latest`
+- Local bind: `127.0.0.1:8083 -> 8080`
+- Internal URL: `https://lubelogger.internal`
+
+Compose file:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/hargata/lubelogger:latest
+    container_name: lubelogger
+    restart: unless-stopped
+    volumes:
+      - ./data:/App/data
+      - ./keys:/root/.aspnet/DataProtection-Keys
+    ports:
+      - 127.0.0.1:8083:8080
+```
+
+Caddy entry:
+
+```
+lubelogger.internal {
+    reverse_proxy 127.0.0.1:8083
+}
+```
 
 ## Nextcloud
 

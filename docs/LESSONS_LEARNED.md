@@ -60,7 +60,7 @@ Complex setups are fragile setups. Every extra layer, every clever workaround, e
 
 **Principle**: Choose boring solutions. They're easier to debug at 2 AM.
 
-I removed my reverse proxy (Caddy) because Tailscale Serve does the same thing with less configuration. I use Portainer's UI instead of managing compose files across directories. I pick the approach with fewer moving parts.
+I stick with one reverse proxy (Caddy) for internal services because it gives me stable `*.internal` URLs, local certificates, and one obvious place to wire new private apps. I use Dockge as a UI on top of the compose folders. I pick the approach with fewer moving parts.
 
 When something breaks in a simple system, there are fewer places to look.
 
