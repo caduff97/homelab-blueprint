@@ -14,6 +14,7 @@ Backup strategy is fully active across two nodes.
 | Immich DB dump staging | ✅ Active — app-generated dump prepared before backup |
 | CT 200 (hermes) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
 | VM 201 (spellcaster) → PBS | ✅ Active — nightly 1AM, wardstone PBS |
+| TPT Center DB (Lightsail) → home pull | ✅ Active — nightly 23:57, folder rides CT 100 vzdump |
 | Offsite / external backup | ❌ Not yet — all storage on-site |
 
 ## Storage Architecture
@@ -90,6 +91,37 @@ Why this split:
 
 Hermes LXC and spellcaster Ubuntu VM backed up nightly at 1AM via Proxmox backup scheduler to wardstone PBS.
 
+### TPT Center external app DB → home (active)
+
+TPT Center is a public web app hosted off-site on AWS Lightsail (SQLite backed, Dockerized). It lives outside the cluster, so its database is pulled home nightly and then rides along in the normal CT 100 backup that already goes to PBS. This keeps Lightsail lightweight, keeps no home or PBS credentials on the cloud host, and reuses existing backup infrastructure instead of exposing PBS to the internet.
+
+Flow, home pulls from cloud, never the reverse:
+
+```
+Lightsail (23:55 MST)                CT 100 home (23:57 MST)                   wardstone PBS
+  generate verified SQLite  ── ssh/rsync pull (read-only key) ──▶  /root/backups/tpt-center/sqlite/  ──▶ nightly CT 100 vzdump
+  .db.gz, 14-day retention                                           30-day local retention
+```
+
+- **Cloud side (Lightsail):** systemd timer `tpt-center-db-backup.timer` runs the `deploy` user script `/home/deploy/scripts/tpt-center-backup-sqlite.sh` at 23:55 MST. It uses the SQLite backup API from inside the backend container (consistent while the app runs), runs `PRAGMA integrity_check`, gzips the result, and keeps 14 days locally in `/home/deploy/backups/tpt-center/sqlite/`.
+- **Home side (CT 100):** systemd timer `tpt-center-pull-backup.timer` runs `/root/scripts/tpt-center-pull-backup.sh` at 23:57 MST. It rsyncs the `.db.gz` files over SSH using a dedicated read-only key (`/root/.ssh/tpt_lightsail_backup`), verifies gzip integrity, and keeps 30 days in `/root/backups/tpt-center/sqlite/`.
+- **PBS coverage:** that folder sits inside CT 100, so the existing nightly CT 100 vzdump captures it automatically. No new PBS job is required.
+
+Security notes:
+- Home pulls from Lightsail. Lightsail holds no key into the home network and no PBS credentials.
+- The pull key is dedicated to this task; if Lightsail is ever compromised it cannot reach or delete PBS backups.
+- Do not back up the live SQLite file directly; the SQLite backup API produces a consistent copy while the app is writing.
+
+### Restore TPT Center database
+
+```bash
+# On CT 100 (home), pick a backup and decompress
+cd /root/backups/tpt-center/sqlite
+gunzip -c tpt-center-YYYYMMDD-HHMMSS.db.gz > /tmp/tpt-restore.db
+sqlite3 /tmp/tpt-restore.db "PRAGMA integrity_check;"   # expect: ok
+# Copy /tmp/tpt-restore.db back to Lightsail and swap it in as /data/app.db for the backend container.
+```
+
 ## Schedule
 
 | Time | Job | Node | Status |
@@ -99,6 +131,8 @@ Hermes LXC and spellcaster Ubuntu VM backed up nightly at 1AM via Proxmox backup
 | 12:00 AM | CT 200 + VM 201 vzdump → PBS | wardstone | ✅ Active |
 | 12:00 AM | Immich DB dump staging | main app host | ✅ Active |
 | 12:10 AM | Immich media backup | main app host / PBS flow | ✅ Active |
+| 11:55 PM | TPT Center DB backup (Lightsail, cloud) | AWS Lightsail | ✅ Active |
+| 11:57 PM | TPT Center DB pull → CT 100 | proxmox | ✅ Active |
 
 ## Retention Policy
 
