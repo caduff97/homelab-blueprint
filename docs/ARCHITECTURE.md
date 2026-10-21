@@ -298,7 +298,7 @@ zfs list -t snapshot
 
 ### How It Works
 
-Push to `main` → GitHub sends a webhook POST to `https://webhooks.carlostri.com/hooks/project-name` → `adnanh/webhook` validates the HMAC signature → runs `deploy.sh project-name`.
+Push to `main` → GitHub sends a webhook POST to `https://webhooks.carlosef.com/hooks/project-name` → `adnanh/webhook` validates the HMAC signature → runs `deploy.sh project-name`.
 
 ```
 push to main
@@ -307,7 +307,7 @@ push to main
 GitHub webhook POST (HMAC-signed)
      │
      ▼
-webhooks.carlostri.com → cloudflared → host:9000
+webhooks.carlosef.com → cloudflared → host:9000
      │
      ▼
 webhook service validates signature → deploy.sh project-name
@@ -425,7 +425,7 @@ git clone https://github.com/caduff97/project-name.git ~/containers/project-name
    ```
 
 4. Add a GitHub webhook on the repo → Settings → Webhooks:
-   - Payload URL: `https://webhooks.carlostri.com/hooks/project-name`
+   - Payload URL: `https://webhooks.carlosef.com/hooks/project-name`
    - Content type: `application/json`
    - Secret: the generated secret
    - Events: push only
@@ -479,7 +479,6 @@ Each service lives in its own folder under `~/containers/`:
 ├── capitallog/     ← investments manager
 ├── bnbturf/        ← public app
 ├── bonafideready/  ← public app
-├── carlostri/      ← public app
 ├── scorebuddies/   ← public app
 ├── nextcloud/      ← data in /tank/nextcloud
 └── immich/         ← data in /tank/immich
