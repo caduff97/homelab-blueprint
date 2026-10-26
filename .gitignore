@@ -1,0 +1,49 @@
+# Private folder (contains real IPs, domains, credentials references)
+private/
+
+# Internal operational guide (contains sensitive info)
+CLAUDE.md
+
+# Sensitive files
+*.env
+.env*
+*.secret
+*.key
+*.pem
+credentials.json
+secrets.yaml
+*-password
+
+# Tokens and API keys
+TUNNEL_TOKEN
+*.token
+
+# Local configuration
+.claude/
+settings.local.json
+*.local.json
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
